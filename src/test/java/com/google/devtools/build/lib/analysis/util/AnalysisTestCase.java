@@ -101,7 +101,8 @@ public abstract class AnalysisTestCase extends FoundationTestCase {
   public enum Flag {
     KEEP_GOING,
     // Configurations that only include the fragments a target needs to properly analyze.
-    TRIMMED_CONFIGURATIONS
+    TRIMMED_CONFIGURATIONS,
+    SKYFRAME_PREPARE_ANALYSIS
   }
 
   /** Helper class to make it easy to enable and disable flags. */
@@ -213,8 +214,8 @@ public abstract class AnalysisTestCase extends FoundationTestCase {
             analysisMock.getInvocationPolicyEnforcer().getInvocationPolicy()),
         UUID.randomUUID(),
         ImmutableMap.<String, String>of(),
-        ImmutableMap.<String, String>of(),
         new TimestampGranularityMonitor(BlazeClock.instance()));
+    skyframeExecutor.setActionEnv(ImmutableMap.<String, String>of());
     skyframeExecutor.injectExtraPrecomputedValues(
         ImmutableList.of(
             PrecomputedValue.injected(
@@ -318,6 +319,7 @@ public abstract class AnalysisTestCase extends FoundationTestCase {
     AnalysisOptions viewOptions = optionsParser.getOptions(AnalysisOptions.class);
     // update --keep_going option if test requested it.
     boolean keepGoing = flags.contains(Flag.KEEP_GOING);
+    viewOptions.skyframePrepareAnalysis = flags.contains(Flag.SKYFRAME_PREPARE_ANALYSIS);
 
     PackageCacheOptions packageCacheOptions = optionsParser.getOptions(PackageCacheOptions.class);
     PathPackageLocator pathPackageLocator =
@@ -342,8 +344,8 @@ public abstract class AnalysisTestCase extends FoundationTestCase {
             analysisMock.getInvocationPolicyEnforcer().getInvocationPolicy()),
         UUID.randomUUID(),
         ImmutableMap.<String, String>of(),
-        ImmutableMap.<String, String>of(),
         new TimestampGranularityMonitor(BlazeClock.instance()));
+    skyframeExecutor.setActionEnv(ImmutableMap.<String, String>of());
     skyframeExecutor.invalidateFilesUnderPathForTesting(
         reporter, ModifiedFileSet.EVERYTHING_MODIFIED, Root.fromPath(rootDirectory));
 
@@ -353,18 +355,19 @@ public abstract class AnalysisTestCase extends FoundationTestCase {
             ImmutableList.copyOf(labels),
             PathFragment.EMPTY_FRAGMENT,
             loadingOptions,
+            LOADING_PHASE_THREADS,
             keepGoing,
             /*determineTests=*/ false);
 
     BuildRequestOptions requestOptions = optionsParser.getOptions(BuildRequestOptions.class);
     ImmutableSortedSet<String> multiCpu = ImmutableSortedSet.copyOf(requestOptions.multiCpus);
-    masterConfig = skyframeExecutor.createConfigurations(
-        reporter, ruleClassProvider.getConfigurationFragments(), buildOptions,
-        multiCpu, false);
+    skyframeExecutor.setConfigurationFragmentFactories(
+        ruleClassProvider.getConfigurationFragments());
     analysisResult =
         buildView.update(
             loadingResult,
-            masterConfig,
+            buildOptions,
+            multiCpu,
             aspects,
             viewOptions,
             keepGoing,
@@ -372,6 +375,7 @@ public abstract class AnalysisTestCase extends FoundationTestCase {
             AnalysisTestUtil.TOP_LEVEL_ARTIFACT_CONTEXT,
             reporter,
             eventBus);
+    masterConfig = analysisResult.getConfigurationCollection();
     return analysisResult;
   }
 

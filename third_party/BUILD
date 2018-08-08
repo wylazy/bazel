@@ -18,7 +18,6 @@ filegroup(
         "//third_party/java/jacoco:srcs",
         "//third_party/java/javapoet:srcs",
         "//third_party/java/jcommander:srcs",
-        "//third_party/java/jopt-simple:srcs",
         "//third_party/java/jdk/langtools:srcs",
         "//third_party/java/proguard:srcs",
         "//third_party/javascript/bootstrap:srcs",
@@ -49,16 +48,6 @@ filegroup(
         "//third_party/checker_framework_javacutil:srcs",
         "//third_party/jformatstring:srcs",
     ],
-)
-
-filegroup(
-    name = "d3-js",
-    srcs = glob(["javascript/d3/**/*.js"]),
-)
-
-filegroup(
-    name = "jquery",
-    srcs = glob(["javascript/jquery/**/*.jslib"]),
 )
 
 java_import(
@@ -302,16 +291,6 @@ filegroup(
 )
 
 java_import(
-    name = "bytebuddy",
-    jars = ["bytebuddy/byte-buddy-dep-0.7-rc6.jar"],
-    deps = [
-        ":asm",
-        ":asm-commons",
-        ":asm-util",
-    ],
-)
-
-java_import(
     name = "compile_testing",
     jars = ["compile_testing/compile-testing-0.13.jar"],
 )
@@ -522,6 +501,11 @@ filegroup(
 # Testing
 
 java_import(
+    name = "diffutils",
+    jars = ["diffutils/diffutils-1.3.0.jar"],
+)
+
+java_import(
     name = "guava-testlib",
     jars = ["guava/guava-testlib-25.1-jre.jar"],
 )
@@ -535,38 +519,16 @@ java_import(
 )
 
 java_import(
-    name = "minlog_lib",
-    jars = ["minlog/minlog-1.2.jar"],
-)
-
-java_library(
-    name = "minlog",
-    exports = ["minlog_lib"],
-)
-
-java_import(
     name = "mockito",
     jars = ["mockito/mockito-all-1.10.19.jar"],
+    deps = [
+        ":objenesis",
+    ],
 )
 
 java_import(
-    name = "objenesis_lib",
-    jars = ["objenesis/objenesis-1_3.jar"],
-)
-
-java_library(
     name = "objenesis",
-    exports = ["objenesis_lib"],
-)
-
-java_import(
-    name = "reflectasm_lib",
-    jars = ["reflectasm/reflectasm-1.10.1.jar"],
-)
-
-java_library(
-    name = "reflectasm",
-    exports = ["reflectasm_lib"],
+    jars = ["objenesis/objenesis-1_3.jar"],
 )
 
 java_import(
@@ -576,12 +538,15 @@ java_import(
 
 java_import(
     name = "truth",
-    jars = ["truth/truth-0.36.jar"],
+    jars = ["truth/truth-0.42.jar"],
+    runtime_deps = [
+        ":diffutils",
+    ],
 )
 
 java_import(
     name = "truth8",
-    jars = ["truth8/truth-java8-extension-0.36.jar"],
+    jars = ["truth8/truth-java8-extension-0.42.jar"],
 )
 
 java_import(
@@ -598,25 +563,12 @@ filegroup(
     ],
 )
 
-config_setting(
-    name = "windows_mingw",
-    values = {"compiler": "windows_mingw"},
-)
+load(":compiler_config_setting.bzl", "create_compiler_config_setting")
 
-config_setting(
-    name = "windows_msys64",
-    values = {"compiler": "windows_msys64"},
-)
-
-config_setting(
-    name = "windows_msys64_mingw64",
-    values = {"compiler": "windows_msys64_mingw64"},
-)
-
-config_setting(
-    name = "windows_clang",
-    values = {"compiler": "windows_clang"},
-)
+create_compiler_config_setting(name = "windows_mingw", value = "windows_mingw")
+create_compiler_config_setting(name = "windows_msys64", value = "windows_msys64")
+create_compiler_config_setting(name = "windows_msys64_mingw64", value = "windows_msys64_mingw64")
+create_compiler_config_setting(name = "windows_clang", value = "windows_clang")
 
 config_setting(
     name = "darwin",

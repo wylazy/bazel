@@ -131,9 +131,6 @@ public class CppCompileAction extends AbstractAction
    */
   private final UUID actionClassId;
 
-  /** Whether this action needs to discover inputs. */
-  private final boolean discoversInputs;
-
   private final ImmutableList<PathFragment> builtInIncludeDirectories;
 
   /**
@@ -143,9 +140,8 @@ public class CppCompileAction extends AbstractAction
   private Iterable<Artifact> additionalInputs = null;
 
   /**
-   * Set when a two-stage input discovery is used.
-   *
-   * <p>Used only during action execution.
+   * Used only during input discovery, when input discovery requires other actions
+   * to be executed first.
    */
   private Set<Artifact> usedModules = null;
 
@@ -163,13 +159,11 @@ public class CppCompileAction extends AbstractAction
    *   <li><i>Action caching.</i> It is set when restoring from the action cache. It is queried
    *       immediately after restoration to populate the {@link
    *       com.google.devtools.build.lib.skyframe.ActionExecutionValue}.
-   *   <li><i>Input discovery</i>It is set by {@link #discoverInputsStage2}. It is queried to
+   *   <li><i>Input discovery</i>It is set by {@link #discoverInputs}. It is queried to
    *       populate the {@link com.google.devtools.build.lib.skyframe.ActionExecutionValue}.
    *   <li><i>Compilation</i>Compilation reads this field to know what needs to be staged.
    * </ul>
    */
-  // TODO(djasper): investigate releasing memory used by this field as early as possible, for
-  // example, by including these values in additionalInputs.
   private ImmutableList<Artifact> discoveredModules = null;
 
   /**
@@ -201,7 +195,7 @@ public class CppCompileAction extends AbstractAction
    * @param actionName a string giving the name of this action for the purpose of toolchain
    *     evaluation
    * @param cppSemantics C++ compilation semantics
-   * @param cppProvider - CcToolchainProvider with configuration-dependent information.
+   * @param builtInIncludeDirectories - list of toolchain-defined builtin include directories.
    */
   CppCompileAction(
       ActionOwner owner,
@@ -231,7 +225,7 @@ public class CppCompileAction extends AbstractAction
       ImmutableMap<String, String> executionInfo,
       String actionName,
       CppSemantics cppSemantics,
-      CcToolchainProvider cppProvider,
+      ImmutableList<PathFragment> builtInIncludeDirectories,
       @Nullable Artifact grepIncludes) {
     super(
         owner,
@@ -271,13 +265,12 @@ public class CppCompileAction extends AbstractAction
     this.executionInfo = executionInfo;
     this.actionName = actionName;
     this.featureConfiguration = featureConfiguration;
-    this.needsDotdInputPruning = cppSemantics.needsDotdInputPruning();
+    this.needsDotdInputPruning =
+        cppSemantics.needsDotdInputPruning() && !sourceFile.isFileType(CppFileTypes.CPP_MODULE);
     this.needsIncludeValidation = cppSemantics.needsIncludeValidation();
     this.includeProcessing = cppSemantics.getIncludeProcessing();
     this.actionClassId = actionClassId;
-    this.discoversInputs = shouldScanIncludes || cppSemantics.needsDotdInputPruning();
-    this.builtInIncludeDirectories =
-        ImmutableList.copyOf(cppProvider.getBuiltInIncludeDirectories());
+    this.builtInIncludeDirectories = builtInIncludeDirectories;
     this.additionalInputs = null;
     this.usedModules = null;
     this.topLevelModules = null;
@@ -346,7 +339,7 @@ public class CppCompileAction extends AbstractAction
 
   @Override
   public boolean discoversInputs() {
-    return discoversInputs;
+    return shouldScanIncludes || needsDotdInputPruning;
   }
 
   @Override
@@ -394,95 +387,88 @@ public class CppCompileAction extends AbstractAction
    */
   private Iterable<Artifact> filterDiscoveredHeaders(
       ActionExecutionContext actionExecutionContext, Iterable<Artifact> headers) {
-    // Get the inputs we know about. Note that this (compared to validateInclusions) does not
-    // take mandatoryInputs into account. The reason is that these by definition get added to the
-    // action input and thus are available anyway. Not having to look at them here saves us from
-    // requiring and ArtifactExpander, which actionExecutionContext doesn't have at this point.
-    // This only works as long as mandatory inputs do not contain headers that are built into a
-    // module.
-    Set<Artifact> allowedIncludes =
-        new HashSet<>(ccCompilationContext.getDeclaredIncludeSrcs().toCollection());
-    allowedIncludes.addAll(additionalPrunableHeaders.toCollection());
+    Set<Artifact> undeclaredHeaders = Sets.newHashSet(headers);
 
-    // Whitelisted directories. Lazily initialize, so that compiles that properly declare all
-    // their files profit.
+    // Note that this (compared to validateInclusions) does not take mandatoryInputs into account.
+    // The reason is that these by definition get added to the action input and thus are available
+    // anyway. Not having to look at them here saves us from requiring and ArtifactExpander, which
+    // actionExecutionContext doesn't have at this point. This only works as long as mandatory
+    // inputs do not contain headers that are built into a module.
+    for (Artifact header : ccCompilationContext.getDeclaredIncludeSrcs()) {
+      undeclaredHeaders.remove(header);
+    }
+    for (Artifact header : additionalPrunableHeaders) {
+      undeclaredHeaders.remove(header);
+    }
+    if (undeclaredHeaders.isEmpty()) {
+      return headers;
+    }
+
+    Iterable<PathFragment> ignoreDirs =
+        cppConfiguration.isStrictSystemIncludes()
+            ? getBuiltInIncludeDirectories()
+            : getValidationIgnoredDirs();
+    ArrayList<Artifact> found = new ArrayList<>();
+    // Lazily initialize, so that compiles that properly declare all their files profit.
     Set<PathFragment> declaredIncludeDirs = null;
-    Iterable<PathFragment> ignoreDirs = null;
-
-    // Create a filtered list of headers.
-    ImmutableList.Builder<Artifact> result = ImmutableList.builder();
-    for (Artifact header : headers) {
-      if (allowedIncludes.contains(header)) {
-        result.add(header);
-        continue;
-      }
-      if (ignoreDirs == null) {
-        ignoreDirs =
-            cppConfiguration.isStrictSystemIncludes()
-                ? getBuiltInIncludeDirectories()
-                : getValidationIgnoredDirs();
-      }
+    for (Artifact header : undeclaredHeaders) {
       if (FileSystemUtils.startsWithAny(header.getExecPath(), ignoreDirs)) {
-        result.add(header);
+        found.add(header);
         continue;
       }
       if (declaredIncludeDirs == null) {
         declaredIncludeDirs = ccCompilationContext.getDeclaredIncludeDirs().toSet();
       }
       if (isDeclaredIn(actionExecutionContext, header, declaredIncludeDirs)) {
-        result.add(header);
+        found.add(header);
       }
     }
-    return result.build();
+    undeclaredHeaders.removeAll(found);
+    if (undeclaredHeaders.isEmpty()) {
+      return headers;
+    }
+
+    return Iterables.filter(headers, header -> !undeclaredHeaders.contains(header));
   }
 
   @Nullable
   @Override
   public Iterable<Artifact> discoverInputs(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException {
-    additionalInputs = findUsedHeaders(actionExecutionContext);
-    if (!shouldScanDotdFiles()) {
-      additionalInputs = filterDiscoveredHeaders(actionExecutionContext, additionalInputs);
+    Preconditions.checkArgument(!sourceFile.isFileType(CppFileTypes.CPP_MODULE));
+
+    if (additionalInputs == null) {
+      additionalInputs = findUsedHeaders(actionExecutionContext);
+
+      if (!shouldScanIncludes) {
+        return additionalInputs;
+      }
+
+      if (!shouldScanDotdFiles()) {
+        // If we aren't looking at .d files later, remove undeclared inputs now.
+        additionalInputs = filterDiscoveredHeaders(actionExecutionContext, additionalInputs);
+      }
     }
-    if (!shouldPruneModules) {
+
+    if (!shouldScanIncludes || !shouldPruneModules) {
       return additionalInputs;
     }
 
-    if (sourceFile.isFileType(CppFileTypes.CPP_MODULE)) {
-      // If we are generating code from a module, the module is all we need.
-      // TODO(djasper): Do we really need the source files?
-      usedModules = ImmutableSet.of(sourceFile);
-      additionalInputs =
-          new ImmutableList.Builder<Artifact>().addAll(additionalInputs).add(sourceFile).build();
-      return additionalInputs;
-    }
-
-    usedModules =
-        ccCompilationContext.getUsedModules(usePic, ImmutableSet.copyOf(additionalInputs));
-    return Iterables.concat(additionalInputs, usedModules);
-  }
-
-  /** @return null when either {@link #usedModules} was null or on Skyframe lookup failure */
-  @Nullable
-  @Override
-  public Iterable<Artifact> discoverInputsStage2(SkyFunction.Environment env)
-      throws InterruptedException {
     if (usedModules == null) {
-      // No modules were used in this compilation, no need to do any work.
-      return null;
+      usedModules =
+          ccCompilationContext.getUsedModules(usePic, ImmutableSet.copyOf(additionalInputs));
     }
-
-    Set<Artifact> transitivelyUsedModules = computeTransitivelyUsedModules(env, usedModules);
+    Set<Artifact> transitivelyUsedModules =
+        computeTransitivelyUsedModules(
+            actionExecutionContext.getEnvironmentForDiscoveringInputs(), usedModules);
     if (transitivelyUsedModules == null) {
-      // Not all used modules available yet. ActionExecutionValues have been requested. Return so
-      // that this function can be re-executed when ready.
       return null;
     }
 
     discoveredModules = ImmutableList.copyOf(Sets.union(usedModules, transitivelyUsedModules));
     topLevelModules = ImmutableList.copyOf(Sets.difference(usedModules, transitivelyUsedModules));
     usedModules = null;
-    return transitivelyUsedModules;
+    return Iterables.concat(additionalInputs, discoveredModules);
   }
 
   @Override
@@ -999,6 +985,7 @@ public class CppCompileAction extends AbstractAction
      * warning have changed, otherwise we might miss some errors.
      */
     fp.addPaths(ccCompilationContext.getDeclaredIncludeDirs());
+    fp.addPaths(builtInIncludeDirectories);
   }
 
   @Override

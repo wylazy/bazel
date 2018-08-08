@@ -13,8 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
-import static com.google.devtools.build.lib.vfs.FileSystemUtils.createDirectoryAndParents;
-
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
@@ -379,7 +377,6 @@ public final class SkyframeActionExecutor {
   FileSystem createActionFileSystem(
       String relativeOutputPath,
       ActionInputMap inputArtifactData,
-      Iterable<Artifact> allowedInputs,
       Iterable<Artifact> outputArtifacts) {
     return outputService.createActionFileSystem(
         executorEngine.getFileSystem(),
@@ -387,7 +384,6 @@ public final class SkyframeActionExecutor {
         relativeOutputPath,
         sourceRootSupplier.get(),
         inputArtifactData,
-        allowedInputs,
         outputArtifacts);
   }
 
@@ -507,16 +503,6 @@ public final class SkyframeActionExecutor {
       Preconditions.checkState(artifact.isMiddlemanArtifact() || artifact.isTreeArtifact(),
           artifact);
       Collection<Artifact> result = expandedInputs.get(artifact);
-
-      // Note that the result can be empty but not null for TreeArtifacts. And it may be null for
-      // non-aggregating middlemen.
-      if (artifact.isTreeArtifact()) {
-        Preconditions.checkNotNull(
-            result,
-            "TreeArtifact %s cannot be expanded because it is not an input for the action",
-            artifact);
-      }
-
       if (result != null) {
         output.addAll(result);
       }
@@ -529,6 +515,7 @@ public final class SkyframeActionExecutor {
    * tasks related to that action.
    */
   public ActionExecutionContext getContext(
+      MetadataProvider graphFileCache,
       MetadataHandler metadataHandler,
       Map<Artifact, Collection<Artifact>> expandedInputs,
       ImmutableMap<PathFragment, ImmutableList<FilesetOutputSymlink>> inputFilesetMappings,
@@ -537,7 +524,7 @@ public final class SkyframeActionExecutor {
         ArtifactPathResolver.createPathResolver(actionFileSystem, executorEngine.getExecRoot()));
     return new ActionExecutionContext(
         executorEngine,
-        createFileCache(metadataHandler, actionFileSystem),
+        createFileCache(graphFileCache, actionFileSystem),
         actionInputPrefetcher,
         actionKeyContext,
         metadataHandler,
@@ -657,6 +644,7 @@ public final class SkyframeActionExecutor {
    */
   Iterable<Artifact> discoverInputs(
       Action action,
+      PerActionFileCache graphFileCache,
       MetadataHandler metadataHandler,
       Environment env,
       @Nullable FileSystem actionFileSystem)
@@ -664,7 +652,7 @@ public final class SkyframeActionExecutor {
     ActionExecutionContext actionExecutionContext =
         ActionExecutionContext.forInputDiscovery(
             executorEngine,
-            createFileCache(metadataHandler, actionFileSystem),
+            createFileCache(graphFileCache, actionFileSystem),
             actionInputPrefetcher,
             actionKeyContext,
             metadataHandler,
@@ -679,8 +667,9 @@ public final class SkyframeActionExecutor {
     } catch (ActionExecutionException e) {
       throw processAndThrow(
           env.getListener(),
-          e,
+          actionExecutionContext,
           action,
+          e,
           actionExecutionContext.getFileOutErr(),
           ErrorTiming.BEFORE_EXECUTION);
     }
@@ -768,7 +757,7 @@ public final class SkyframeActionExecutor {
         Preconditions.checkState(actionExecutionContext.getMetadataHandler() == metadataHandler,
             "%s %s", actionExecutionContext.getMetadataHandler(), metadataHandler);
         prepareScheduleExecuteAndCompleteAction(
-            eventHandler, action, actionExecutionContext, actionStartTime, actionLookupData);
+            eventHandler, actionExecutionContext, action, actionStartTime, actionLookupData);
         Preconditions.checkState(
             actionExecutionContext.getOutputSymlinks() == null
                 || action instanceof SkyframeAwareAction,
@@ -789,20 +778,21 @@ public final class SkyframeActionExecutor {
     }
   }
 
-  private void createOutputDirectories(Action action) throws ActionExecutionException {
+  private void createOutputDirectories(Action action, ActionExecutionContext context)
+      throws ActionExecutionException {
     try {
       Set<Path> done = new HashSet<>(); // avoid redundant calls for the same directory.
       for (Artifact outputFile : action.getOutputs()) {
         Path outputDir;
         if (outputFile.isTreeArtifact()) {
-          outputDir = outputFile.getPath();
+          outputDir = context.getPathResolver().toPath(outputFile);
         } else {
-          outputDir = outputFile.getPath().getParentDirectory();
+          outputDir = context.getPathResolver().toPath(outputFile).getParentDirectory();
         }
 
         if (done.add(outputDir)) {
           try {
-            createDirectoryAndParents(outputDir);
+            outputDir.createDirectoryAndParents();
             continue;
           } catch (IOException e) {
             /* Fall through to plan B. */
@@ -855,7 +845,7 @@ public final class SkyframeActionExecutor {
 
               p = p.getParentDirectory();
             }
-            createDirectoryAndParents(outputDir);
+            outputDir.createDirectoryAndParents();
           } catch (IOException e) {
             throw new ActionExecutionException(
                 "failed to create output directory '" + outputDir + "'", e, action, false);
@@ -891,22 +881,30 @@ public final class SkyframeActionExecutor {
    */
   private void prepareScheduleExecuteAndCompleteAction(
       ExtendedEventHandler eventHandler,
-      Action action,
       ActionExecutionContext context,
+      Action action,
       long actionStartTime,
       ActionLookupData actionLookupData)
       throws ActionExecutionException, InterruptedException {
-    // ActionFileSystem constructs directories implicitly, so no need to delete the old outputs
-    // and ensure directories exist in this case.
-    if (!usesActionFileSystem()) {
-      // Delete the outputs before executing the action, just to ensure that
-      // the action really does produce the outputs.
-      try {
+    // Delete the outputs before executing the action, just to ensure that
+    // the action really does produce the outputs.
+    try {
+      if (!usesActionFileSystem()) {
         action.prepare(context.getFileSystem(), context.getExecRoot());
-        createOutputDirectories(action);
-      } catch (IOException e) {
-        reportError("failed to delete output files before executing action", e, action, null);
+      } else {
+        try {
+          context.getFileOutErr().getOutputPath().getParentDirectory().createDirectoryAndParents();
+          context.getFileOutErr().getErrorPath().getParentDirectory().createDirectoryAndParents();
+        } catch (IOException e) {
+          throw new ActionExecutionException(
+              "failed to create output directory for output streams'"
+                  + context.getFileOutErr().getErrorPath() + "'",
+              e, action, false);
+        }
       }
+      createOutputDirectories(action, context);
+    } catch (IOException e) {
+      reportError("failed to delete output files before executing action", e, action, null);
     }
 
     eventHandler.post(new ActionStartedEvent(action, actionStartTime));
@@ -917,6 +915,7 @@ public final class SkyframeActionExecutor {
       boolean outputDumped = executeActionTask(eventHandler, action, context);
       completeAction(
           eventHandler,
+          context,
           action,
           context.getMetadataHandler(),
           context.getFileOutErr(),
@@ -929,12 +928,14 @@ public final class SkyframeActionExecutor {
 
   private ActionExecutionException processAndThrow(
       ExtendedEventHandler eventHandler,
-      ActionExecutionException e,
+      ActionExecutionContext actionExecutionContext,
       Action action,
+      ActionExecutionException e,
       FileOutErr outErrBuffer,
       ErrorTiming errorTiming)
-          throws ActionExecutionException {
-    reportActionExecution(eventHandler, action, e, outErrBuffer, errorTiming);
+      throws ActionExecutionException {
+    reportActionExecution(
+        eventHandler, actionExecutionContext, action, e, outErrBuffer, errorTiming);
     boolean reported = reportErrorIfNotAbortingMode(e, outErrBuffer);
 
     ActionExecutionException toThrow = e;
@@ -998,17 +999,25 @@ public final class SkyframeActionExecutor {
       }
       // Defer reporting action success until outputs are checked
     } catch (ActionExecutionException e) {
-      throw processAndThrow(eventHandler, e, action, outErrBuffer, ErrorTiming.AFTER_EXECUTION);
+      throw processAndThrow(
+          eventHandler,
+          actionExecutionContext,
+          action,
+          e,
+          outErrBuffer,
+          ErrorTiming.AFTER_EXECUTION);
     }
     return false;
   }
 
   private void completeAction(
       ExtendedEventHandler eventHandler,
+      ActionExecutionContext actionExecutionContext,
       Action action,
       MetadataHandler metadataHandler,
       FileOutErr fileOutErr,
-      boolean outputAlreadyDumped) throws ActionExecutionException {
+      boolean outputAlreadyDumped)
+      throws ActionExecutionException {
     try {
       Preconditions.checkState(action.inputsDiscovered(),
           "Action %s successfully executed, but inputs still not known", action);
@@ -1028,16 +1037,23 @@ public final class SkyframeActionExecutor {
         }
       }
 
-      reportActionExecution(eventHandler, action, null, fileOutErr, ErrorTiming.NO_ERROR);
+      reportActionExecution(
+          eventHandler, actionExecutionContext, action, null, fileOutErr, ErrorTiming.NO_ERROR);
     } catch (ActionExecutionException actionException) {
       // Success in execution but failure in completion.
       reportActionExecution(
-          eventHandler, action, actionException, fileOutErr, ErrorTiming.AFTER_EXECUTION);
+          eventHandler,
+          actionExecutionContext,
+          action,
+          actionException,
+          fileOutErr,
+          ErrorTiming.AFTER_EXECUTION);
       throw actionException;
     } catch (IllegalStateException exception) {
       // More serious internal error, but failure still reported.
       reportActionExecution(
           eventHandler,
+          actionExecutionContext,
           action,
           new ActionExecutionException(exception, action, true),
           fileOutErr,
@@ -1213,6 +1229,7 @@ public final class SkyframeActionExecutor {
 
   private void reportActionExecution(
       ExtendedEventHandler eventHandler,
+      ActionExecutionContext actionExecutionContext,
       Action action,
       ActionExecutionException exception,
       FileOutErr outErr,
@@ -1226,7 +1243,14 @@ public final class SkyframeActionExecutor {
     if (outErr.hasRecordedStderr()) {
       stderr = outErr.getErrorPath();
     }
-    eventHandler.post(new ActionExecutedEvent(action, exception, stdout, stderr, errorTiming));
+    eventHandler.post(
+        new ActionExecutedEvent(
+            action,
+            exception,
+            actionExecutionContext.getInputPath(action.getPrimaryOutput()),
+            stdout,
+            stderr,
+            errorTiming));
   }
 
   /**

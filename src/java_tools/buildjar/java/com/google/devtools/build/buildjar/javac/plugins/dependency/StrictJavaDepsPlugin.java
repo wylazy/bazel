@@ -172,10 +172,14 @@ public final class StrictJavaDepsPlugin extends BlazeJavaCompilerPlugin {
     for (SjdDiagnostic diagnostic : diagnostics) {
       JavaFileObject prev = log.useSource(diagnostic.source());
       try {
-        if (dependencyModule.getStrictJavaDeps() == ERROR) {
-          log.error(diagnostic.pos(), "proc.messager", diagnostic.message());
-        } else {
-          log.warning(diagnostic.pos(), "proc.messager", diagnostic.message());
+        switch (dependencyModule.getStrictJavaDeps()) {
+          case ERROR:
+            log.error(diagnostic.pos(), "proc.messager", diagnostic.message());
+            break;
+          case WARN:
+            log.warning(diagnostic.pos(), "proc.messager", diagnostic.message());
+            break;
+          case OFF: // continue below
         }
       } finally {
         log.useSource(prev);
@@ -197,8 +201,11 @@ public final class StrictJavaDepsPlugin extends BlazeJavaCompilerPlugin {
               // suggest private build labels.
               .map(owner -> owner.withLabel(owner.label().map(label -> canonicalizeTarget(label))))
               .collect(toImmutableSet());
-      errWriter.print(
-          dependencyModule.getFixMessage().get(canonicalizedMissing, canonicalizedLabel));
+      if (dependencyModule.getStrictJavaDeps() != StrictJavaDeps.OFF) {
+        errWriter.print(
+            dependencyModule.getFixMessage().get(canonicalizedMissing, canonicalizedLabel));
+        dependencyModule.setHasMissingTargets();
+      }
     }
   }
 
@@ -213,9 +220,6 @@ public final class StrictJavaDepsPlugin extends BlazeJavaCompilerPlugin {
 
     /** Strict deps diagnostics. */
     private final List<SjdDiagnostic> diagnostics;
-
-    /** The strict_java_deps mode */
-    private final StrictJavaDeps strictJavaDepsMode;
 
     /** Missing targets */
     private final Set<JarOwner> missingTargets;
@@ -245,7 +249,6 @@ public final class StrictJavaDepsPlugin extends BlazeJavaCompilerPlugin {
         Set<JarOwner> missingTargets,
         Set<Path> platformJars) {
       this.directJars = dependencyModule.directJars();
-      this.strictJavaDepsMode = dependencyModule.getStrictJavaDeps();
       this.diagnostics = diagnostics;
       this.missingTargets = missingTargets;
       this.directDependenciesMap = dependencyModule.getExplicitDependenciesMap();
@@ -275,7 +278,7 @@ public final class StrictJavaDepsPlugin extends BlazeJavaCompilerPlugin {
      * strict_java_deps is enabled, it emits a [strict] compiler warning/error.
      */
     private void collectExplicitDependency(Path jarPath, JCTree node, Symbol sym) {
-      if (strictJavaDepsMode.isEnabled() && !isStrictDepsExempt) {
+      if (!isStrictDepsExempt) {
         // Does it make sense to emit a warning/error for this pair of (type, owner)?
         // We want to emit only one error/warning per owner.
         if (!directJars.contains(jarPath) && seenStrictDepsViolatingJars.add(jarPath)) {
@@ -526,6 +529,11 @@ public final class StrictJavaDepsPlugin extends BlazeJavaCompilerPlugin {
       return false;
     }
 
+    return true;
+  }
+
+  @Override
+  public boolean runOnAttributionErrors() {
     return true;
   }
 }

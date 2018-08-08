@@ -778,8 +778,8 @@ public class LoadingPhaseRunnerTest {
           analysisMock.getDefaultsPackageContent(),
           UUID.randomUUID(),
           ImmutableMap.<String, String>of(),
-          ImmutableMap.<String, String>of(),
           new TimestampGranularityMonitor(clock));
+      skyframeExecutor.setActionEnv(ImmutableMap.<String, String>of());
       this.options = Options.getDefaults(LoadingOptions.class);
     }
 
@@ -815,6 +815,8 @@ public class LoadingPhaseRunnerTest {
               ImmutableList.copyOf(patterns),
               PathFragment.EMPTY_FRAGMENT,
               options,
+              // We load very few packages, and everything is in memory; two should be plenty.
+              /* threadCount= */ 2,
               keepGoing,
               determineTests);
       this.targetParsingCompleteEvent = findPost(TargetParsingCompleteEvent.class);

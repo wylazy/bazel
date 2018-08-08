@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.rules.java;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.devtools.build.lib.analysis.config.BuildConfiguration.StrictDepsMode.OFF;
 import static com.google.devtools.build.lib.rules.java.JavaCommon.collectJavaCompilationArgs;
 
@@ -52,7 +53,7 @@ public final class JavaLibraryHelper {
    */
   private final List<JavaCompilationArgsProvider> deps = new ArrayList<>();
   private final List<JavaCompilationArgsProvider> exports = new ArrayList<>();
-  private final List<JavaPluginInfoProvider> plugins = new ArrayList<>();
+  private JavaPluginInfoProvider plugins = JavaPluginInfoProvider.empty();
   private ImmutableList<String> javacOpts = ImmutableList.of();
   private ImmutableList<Artifact> sourcePathEntries = ImmutableList.of();
   private StrictDepsMode strictDepsMode = StrictDepsMode.OFF;
@@ -131,8 +132,10 @@ public final class JavaLibraryHelper {
     return this;
   }
 
-  public JavaLibraryHelper addAllPlugins(Iterable<JavaPluginInfoProvider> providers) {
-    Iterables.addAll(plugins, providers);
+  public JavaLibraryHelper setPlugins(JavaPluginInfoProvider plugins) {
+    checkNotNull(plugins, "plugins must not be null");
+    checkState(this.plugins.isEmpty());
+    this.plugins = plugins;
     return this;
   }
 
@@ -264,8 +267,11 @@ public final class JavaLibraryHelper {
         /* instrumentationMetadataJar= */ null,
         nativeHeaderOutput);
 
-    artifactsBuilder.addRuntimeJar(output);
-    Artifact iJar = helper.createCompileTimeJarAction(output, artifactsBuilder);
+    Artifact iJar = null;
+    if (!sourceJars.isEmpty() || !sourceFiles.isEmpty()) {
+      artifactsBuilder.addRuntimeJar(output);
+      iJar = helper.createCompileTimeJarAction(output, artifactsBuilder);
+    }
 
     if (createOutputSourceJar) {
       helper.createSourceJarAction(
@@ -274,7 +280,7 @@ public final class JavaLibraryHelper {
     ImmutableList<Artifact> outputSourceJars =
         outputSourceJar == null ? ImmutableList.of() : ImmutableList.of(outputSourceJar);
     outputJarsBuilder
-        .addOutputJar(new OutputJar(output, iJar, outputSourceJars))
+        .addOutputJar(new OutputJar(output, iJar, manifestProtoOutput, outputSourceJars))
         .setJdeps(outputDepsProto)
         .setNativeHeaders(nativeHeaderOutput);
 

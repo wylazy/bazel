@@ -964,7 +964,7 @@ public final class CcCompilationHelper {
     // But defines come after those inherited from deps.
     ccCompilationContextBuilder.addDefines(defines);
 
-    // There are no ordering constraints for declared include dirs/srcs, or the pregrepped headers.
+    // There are no ordering constraints for declared include dirs/srcs.
     ccCompilationContextBuilder.addDeclaredIncludeSrcs(publicHeaders.getHeaders());
     ccCompilationContextBuilder.addDeclaredIncludeSrcs(publicTextualHeaders);
     ccCompilationContextBuilder.addDeclaredIncludeSrcs(privateHeaders);
@@ -973,12 +973,6 @@ public final class CcCompilationHelper {
     ccCompilationContextBuilder.addModularHdrs(publicHeaders.getHeaders());
     ccCompilationContextBuilder.addModularHdrs(privateHeaders);
     ccCompilationContextBuilder.addTextualHdrs(publicTextualHeaders);
-    ccCompilationContextBuilder.addPregreppedHeaders(
-        CppHelper.createExtractInclusions(ruleContext, semantics, publicHeaders.getHeaders()));
-    ccCompilationContextBuilder.addPregreppedHeaders(
-        CppHelper.createExtractInclusions(ruleContext, semantics, publicTextualHeaders));
-    ccCompilationContextBuilder.addPregreppedHeaders(
-        CppHelper.createExtractInclusions(ruleContext, semantics, privateHeaders));
 
     // Add this package's dir to declaredIncludeDirs, & this rule's headers to declaredIncludeSrcs
     // Note: no include dir for STRICT mode.
@@ -1464,8 +1458,7 @@ public final class CcCompilationHelper {
       userCompileFlags.addAll(collectPerFileCopts(sourceFile, sourceLabel));
     }
     String dotdFileExecPath = null;
-    if (isGenerateDotdFile(builder.getSourceFile())) {
-      Preconditions.checkNotNull(builder.getDotdFile());
+    if (builder.getDotdFile() != null) {
       dotdFileExecPath = builder.getDotdFile().getSafeExecPath().getPathString();
     }
     ImmutableMap.Builder<String, String> allAdditionalBuildVariables = ImmutableMap.builder();
@@ -1516,22 +1509,12 @@ public final class CcCompilationHelper {
    * initialized.
    */
   private CppCompileActionBuilder initializeCompileAction(Artifact sourceArtifact) {
-    CppCompileActionBuilder builder = createCompileActionBuilder(sourceArtifact);
-    builder.setFeatureConfiguration(featureConfiguration);
-
-    return builder;
-  }
-
-  /**
-   * Creates a basic cpp compile action builder for source file. Configures options, crosstool
-   * inputs, output and dotd file names, {@code CcCompilationContext} and copts.
-   */
-  private CppCompileActionBuilder createCompileActionBuilder(Artifact source) {
     CppCompileActionBuilder builder =
         new CppCompileActionBuilder(ruleContext, ccToolchain, configuration);
-    builder.setSourceFile(source);
+    builder.setSourceFile(sourceArtifact);
     builder.setCcCompilationContext(ccCompilationContext);
     builder.setCoptsFilter(coptsFilter);
+    builder.setFeatureConfiguration(featureConfiguration);
     return builder;
   }
 

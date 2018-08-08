@@ -286,8 +286,8 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
         "",
         UUID.randomUUID(),
         ImmutableMap.<String, String>of(),
-        ImmutableMap.<String, String>of(),
         tsgm);
+    skyframeExecutor.setActionEnv(ImmutableMap.<String, String>of());
     useConfiguration();
     setUpSkyframe();
     // Also initializes ResourceManager.
@@ -351,9 +351,10 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
 
     BuildOptions buildOptions = ruleClassProvider.createBuildOptions(optionsParser);
     skyframeExecutor.resetConfigurationCollectionForTesting();
+    skyframeExecutor.setConfigurationFragmentFactories(
+        ruleClassProvider.getConfigurationFragments());
     return skyframeExecutor.createConfigurations(
-        reporter, ruleClassProvider.getConfigurationFragments(), buildOptions,
-        ImmutableSet.<String>of(), false);
+        reporter, buildOptions, ImmutableSet.<String>of(), false);
   }
 
   protected Target getTarget(String label)
@@ -404,8 +405,8 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
         ruleClassProvider.getDefaultsPackageContent(optionsParser),
         UUID.randomUUID(),
         ImmutableMap.<String, String>of(),
-        ImmutableMap.<String, String>of(),
         tsgm);
+    skyframeExecutor.setActionEnv(ImmutableMap.<String, String>of());
     skyframeExecutor.setDeletedPackages(ImmutableSet.copyOf(packageCacheOptions.getDeletedPackages()));
     skyframeExecutor.injectExtraPrecomputedValues(
         ImmutableList.of(
@@ -1746,6 +1747,7 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
             targets,
             PathFragment.EMPTY_FRAGMENT,
             loadingOptions,
+            loadingPhaseThreads,
             keepGoing,
             /*determineTests=*/ false);
     if (!doAnalysis) {
@@ -1754,7 +1756,8 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
     }
     return view.update(
         loadingResult,
-        masterConfig,
+        targetConfig.getOptions(),
+        /* multiCpu= */ ImmutableSet.of(),
         aspects,
         viewOptions,
         keepGoing,
